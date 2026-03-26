@@ -4,7 +4,7 @@
 
 Under strict parameter budgets, allocating a unique set of weights per layer is inefficient. Standard transformers duplicate large weight matrices across depth, even though many layers learn structurally similar transformations.
 
-Prior approaches attempt to address this through **weight tying or recurrence**, but these impose rigid constraints and typically underperform fully independent per-layer parameterization.
+Prior approaches attempt to address this through weight tying or recurrence, but these impose rigid constraints and typically underperform fully independent per-layer parameterization.
 
 We instead pursue the same motivation — **parameter reuse across depth** — but with significantly greater flexibility.
 
