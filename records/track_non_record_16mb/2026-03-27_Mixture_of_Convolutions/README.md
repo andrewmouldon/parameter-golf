@@ -12,7 +12,7 @@ This enables **token-adaptive local operators** while preserving the stability o
 
 ## Motivation
 
-Local information is known to be important in this regime. Common techniques such as SmearGate and BigramHash incorporate local context in lightweight ways, and are widely used in strong baselines.
+Parameter efficient ways to incorporate local information is known to be important in this regime. Common techniques such as SmearGate and BigramHash incorporate local context in lightweight ways, and are widely used in strong baselines.
 
 However, these methods are relatively limited: SmearGate performs a simple gated mixing with the previous token, and BigramHash injects local token identity only once at the input.
 
