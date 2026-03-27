@@ -2,7 +2,7 @@
 
 ## Overview
 
-Short convolutions are highly effective in this regime, providing strong improvements at minimal parameter cost. However, standard short convolution applies the same kernel to every token, regardless of context.
+Short convolutions are highly effective in this regime, providing strong improvements at minimal parameter cost. However, standard short convolution applies the same kernel to every token, regardless of identity or context.
 
 We introduce **Mixture of Convolutions (MoC)**, where each token constructs its own convolutional kernel as a mixture over a small shared set of basis kernels.
 
@@ -125,6 +125,6 @@ Short convolution provides a large improvement over baseline, and MoC improves f
 ---
 
 ## Practical Considerations
-MoC is more expensive than standard short convolution due to per-token kernel composition, as it cannot utilize highly optimized existing short-conv kernels which assume static weights.
+MoC is more expensive than standard short convolution due to per-token kernel composition, as it cannot utilize highly optimized existing short-conv implementations which assume static weights.
 
 As a result, MoC is not currently competitive on the time-constrained leaderboard, but is evaluated here in the fixed-step setting.
