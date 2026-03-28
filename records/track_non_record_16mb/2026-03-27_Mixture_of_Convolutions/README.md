@@ -41,7 +41,7 @@ This suggests the need for an intermediate design between:
 
 ## Method: Mixture of Convolutions (MoC)
 
-MoC addresses this by introducing a small set of **basis kernels**, and predicting only how to mix them per token.
+MoC addresses this by introducing a small set of **basis kernels**, and learning only how to mix them per token.
 
 ### Kernel Bank
 
