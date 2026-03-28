@@ -29,7 +29,7 @@ By allowing the negative branch to be learned per channel, each neuron can speci
 
 - `β_i ≈ 0` → ReLU²-like (suppress negatives)  
 - `β_i > 0` → magnitude-sensitive activation  
-- `β_i < 0` → signed response to negative inputs  
+- `β_i < 0` → negative inputs produce modulated negative outputs  
 
 ASQU enables this flexibility with minimal overhead.
 
@@ -43,7 +43,7 @@ f(x) = β_i x^2 if x ≤ 0
 
 - `β_i` is a learned parameter for each channel  
 - adds minimal parameter overhead  
-- preserves the simplicity and stability of squared activations  
+- preserves the effectiveness and stability of squared activations  
 
 ASQU can be viewed as a per-channel generalization of asymmetric squared activations.
 
