@@ -77,7 +77,7 @@ ASQU provides a consistent improvement over both ReLU² and other fixed-slope as
 ### Beta Analysis
 Empirically, we observe that the mean value of β typically converges to roughly around 0.5 (though this also depends significantly on the initialization of beta), which helps explain the effectiveness of fixed-slope asymmetric activations such as LeakyReLU².
 
-However, there is substantial variation across channels: some β values become moderately negative, while others grow larger than 1. This suggests that while a global slope is a strong baseline, different features benefit from distinct activation behaviors that a global, fixed parameterization cannot capture.
+However, there is substantial variation across channels: some β values become moderately negative, while others grow larger than 1. This suggests that while a global slope can be a strong baseline, different features benefit from distinct activation behaviors that a global, fixed parameterization cannot capture.
 
 
 ### Learned Exponent
