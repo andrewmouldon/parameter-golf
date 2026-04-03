@@ -91,6 +91,7 @@ BankLinear replaces QKV projections, and saved parameters are reinvested into a 
 
 - **LoRA-style adapters:** Allocating saved parameters to layer-specific adapters was less effective than increasing MLP capacity.
 - **Output projections:** Applying BankLinear to projections that write directly into the residual stream significantly degraded performance. We hypothesize this is due to the sensitivity of these layers: errors introduced here directly affect the residual stream and accumulate across depth.
-- **Random projections:** We experimented with augmenting the shared bank with fixed random projection matrices. Without depth-aware initialization, this provided a performance benefit. However, once depth-aware initialization is used, we consistently observe degraded performance when including random projections. 
+- **Random projections:** We experimented with augmenting the shared bank with fixed random projection matrices. Without depth-aware initialization, this provided a performance benefit. However, once depth-aware initialization is used, we consistently observe degraded performance when including random projections.
+- **Head-wise bank construction:** We experimented with structuring the shared bank at the attention head level, assigning basis elements to specific heads. This consistently underperformed the standard formulation. In this setting, orthogonal initialization of the basis was important for performance. However, in the standard BankLinear formulation, orthogonal initialization instead degrades performance.
 ---
 
