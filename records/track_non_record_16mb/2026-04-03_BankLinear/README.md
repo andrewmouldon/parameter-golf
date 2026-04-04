@@ -72,6 +72,7 @@ This enables parameter sharing across depth while maintaining expressivity where
 ## Results
 
 All runs are trained for 10k steps under identical settings across three seeds.  
+Three learnable bases compose the bank, which are mixed to compose 9 total layers.
 BankLinear replaces QKV projections, and saved parameters are reinvested into a larger MLP (2.65× vs 2.00× baseline).
 
 | Model | Seed | Pre-quant BPB ↓ | Post-quant BPB ↓ | Size (bytes) |
