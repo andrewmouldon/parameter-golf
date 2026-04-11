@@ -33,7 +33,7 @@ After 25% of training, the model is functionally identical in size and structure
 
 All runs are trained for 10k steps under identical settings across three seeds.
 
-To keep the final model within the same parameter budget, the baseline uses a 2× MLP expansion, while Train-Time Overparameterization (TTO) uses a 4× temporary expansion (8× effective width during training), followed by consolidation back to the original size before export.
+To keep the final model within the same parameter budget, the baseline uses a 2× MLP expansion, while TTO uses a 4× temporary expansion (8× effective width during training), followed by consolidation back to the original size before export.
 
 | Model | Seed | Pre-quant BPB ↓ | Post-quant BPB ↓ | Size (bytes) |
 |-------|------|----------------:|-----------------:|-------------:|
