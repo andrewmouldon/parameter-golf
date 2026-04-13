@@ -106,7 +106,7 @@ From this point onward, training proceeds normally with no additional overhead.
 
 A key observation is that consolidation can occur relatively early. Although the soft pruning is initially disruptive, the model quickly recovers—typically within a small fraction of the remaining training steps—and maintains a consistent performance advantage thereafter.
 
-This makes TTO practical even under tight compute constraints: most of the training run is performed with the final, smaller model, while still benefiting from the improved optimization enabled by early overparameterization.
+This makes TTO practical: most of the training run is performed with the final, smaller model, while still benefiting from the improved optimization enabled by early overparameterization.
 
 ## Selection vs. optimization
 
