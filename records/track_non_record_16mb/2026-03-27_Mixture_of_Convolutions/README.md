@@ -12,72 +12,83 @@ This enables **token-adaptive local operators** while preserving the parameter e
 
 ## Motivation
 
-Parameter efficient ways to incorporate local information is known to be important in this regime. Common techniques such as SmearGate and BigramHash incorporate local context in lightweight ways, and are widely used in strong baselines.
+Parameter-efficient local context is important in this regime. Common techniques such as SmearGate and BigramHash incorporate local information in lightweight ways and are widely used in strong baselines.
 
-However, these methods are relatively limited: SmearGate performs a simple gated mixing with the previous token, and BigramHash injects local token identity only once at the input.
+These methods show that even small amounts of local context can be valuable. Short convolution takes this further by providing a more expressive local operator that can be applied at every layer and directly within QKV projections.
 
-In contrast, short convolution provides a significantly more expressive local operator, applied at every layer and directly within QKV projections.
+However, standard short convolution is still static: all tokens use the same kernel regardless of identity or context.
 
-This suggests that stronger local operators are beneficial.
-
-However, standard short convolution is still **static**: all tokens use the same kernel, regardless of identity or context.
-
-We instead explore making these local operators **dynamic**.
+MoC removes this restriction by making the convolutional kernel token-adaptive while keeping it constrained to a small learned basis.
 
 ---
 
-## From Static to Dynamic Convolution
+## Method
 
-A natural approach is to generate a unique convolutional kernel for each token using a learned projection.
+MoC introduces a bank of learned convolutional basis kernels.
 
-However, we found that this approach performs poorly in practice. We hypothesize that this parameterization is too expressive and difficult to optimize under the same training budget.
+The kernel bank has shape:
 
-This suggests the need for an intermediate design between:
+```text
+(k, dim, kernel_size)
+```
 
-- fixed kernels (too rigid)
-- fully generated kernels (too flexible)
+where:
 
----
+- `k` is the number of basis kernels
+- `dim` is the channel dimension
+- `kernel_size` is the convolution width
 
-## Method: Mixture of Convolutions (MoC)
+For each token, MoC computes mixture weights over this kernel bank:
 
-MoC addresses this by introducing a small set of **basis kernels**, and learning only how to mix them per token.
+```text
+α_t = softmax(gate(z_t) / τ)
+```
 
-### Kernel Bank
+where:
 
-We learn a set of `k` convolutional kernels:
+- `z_t` is the hidden state used to generate QKV
+- `gate(z_t)` produces token-wise routing logits
+- `τ` is a learned temperature controlling routing sharpness
 
-- shape: `(k, dim, kernel_size)`
-- shared across all tokens
+Each token then constructs its own convolutional kernel:
 
----
+```text
+W_t = Σ_i α_t,i · K_i
+```
 
-### Token-wise Routing
+This dynamically constructed kernel is applied as a causal convolution.
 
-For each token, we compute mixture weights:
+## Pseudocode
 
-    α_t = softmax(gate(z_t) / τ)
+```python
+class MixtureOfConvolutions:
+    # shared basis of convolution kernels
+    # k = basis/kernel index, K = causal kernel position
+    basis = learned_tensor(k, dim, K)
 
-- `z_t` is the same hidden state used to generate QKV
-- `τ` is a learned temperature controlling sharpness
+    # token-wise router over basis kernels
+    gate = linear(z_dim, k)
 
----
+    # learned temperature controls routing sharpness
+    temperature = learned_scalar()
 
-### Dynamic Kernel Construction
+    def forward(x, z):
+        # local causal windows around each token
+        windows = causal_windows(x, K)          # [batch, time, dim, K]
 
-Each token constructs its own kernel as a mixture over the basis:
+        # each token chooses a mixture over basis kernels
+        alpha = softmax(gate(z) / temperature)  # [batch, time, k]
 
-    W_t = Σ_i α_t,i * K_i
+        # compose one convolution kernel per token
+        dynamic_kernel = einsum(
+            "btk,kdK->btdK",
+            alpha,     # token-wise mixture weights over k basis kernels
+            basis      # k basis kernels, each with dim channels and K positions
+        )
 
-This kernel is then applied using a standard causal convolution.
-
----
-
-### Special Case: Standard Short Convolution
-
-When `k = 1`, MoC reduces exactly to standard short convolution.
-
-MoC is therefore a **strict generalization** of static short convolution.
+        # apply each token's dynamic local operator
+        return sum(windows * dynamic_kernel, dim=-1)
+```
 
 ---
 
@@ -85,23 +96,44 @@ MoC is therefore a **strict generalization** of static short convolution.
 
 MoC can be viewed as a middle ground between:
 
-- fixed local operators (standard convolution)
-- fully generated operators (projection-based kernels)
+- **Fixed kernels:** stable and efficient, but not adaptive
+- **Fully generated kernels:** highly flexible, but harder to optimize
+- **Mixture-based kernels:** adaptive while remaining constrained to a learned basis
 
-By constraining kernels to lie in a shared basis, MoC provides:
+Directly generating kernels from a projection performed poorly in practice, likely because the parameterization was too flexible under the same training budget.
 
-- enough flexibility to adapt per token
-- enough structure to remain stable during optimization
+By constraining each token’s kernel to lie in the span of a small shared basis, MoC provides token-level flexibility while preserving much of the stability of standard short convolution.
 
-This balance appears to be critical for good performance.
+---
+
+## Special Case
+
+Standard short convolution is the `k = 1` case of MoC.
+
+With a single basis kernel, every token receives the same kernel, so the mixture reduces exactly to static short convolution.
+
+MoC is therefore a generalization of short convolution.
+
+---
+
+## Setup
+
+- Fixed 10k training steps
+- Same setup as the baseline
+- MoC applied as a token-adaptive short convolution
+- MLP expansion adjusted to stay within the parameter budget
+
+MLP multipliers:
+
+- Baseline: 2.00×
+- Short Conv (`k = 1`): 1.99×
+- MoC (`k = 8`): 1.93×
 
 ---
 
 ## Results
 
-All runs are trained for 10k steps under identical settings across three seeds.
-
-MLP expansion is adjusted to keep models within the parameter budget: baseline uses 2.00×, short convolution (k=1) uses 1.99×, and MoC (k=8) uses 1.93×.
+All runs use identical settings across three seeds, building off of the original naive baseline.
 
 | Model | Seed | Pre-quant BPB ↓ | Post-quant BPB ↓ | Size (bytes) |
 |-------|------|----------------:|-----------------:|-------------:|
@@ -118,8 +150,37 @@ MLP expansion is adjusted to keep models within the parameter budget: baseline u
 | **Average (Short Conv)** | — | 1.2201 | 1.2264 | 15865013 |
 | **Average (MoC)** | — | **1.2155** | **1.2219** | 15882081 |
 
-
 Short convolution provides a large improvement over baseline, and MoC improves further by replacing the static kernel with a token-adaptive mixture over basis kernels.
+
+## Stronger Baseline Validation
+
+To check whether MoC still helps beyond the naive baseline setting, I also ran a second validation experiment on a stronger stack.
+
+This setup scales up the original naive baseline with several components from the current 10-minute-track SOTA-style configuration:
+
+- 11 layers
+- 4× MLP expansion for the baseline
+- SP8192 vocabulary
+- stronger training hyperparameters
+
+For this experiment, MoC uses a **3.88× MLP expansion** to stay within the parameter budget. MoC is applied both before QKV and before the MLP, and only the first 192 dimensions are used for the routing gate.
+
+| Model | Seed | Val BPB ↓ |
+|-------|------|----------:|
+| Strong baseline | 1337 | 1.1304 |
+| MoC | 1337 | **1.1180** |
+| Strong baseline | 42 | 1.1312 |
+| MoC | 42 | **1.1196** |
+| Strong baseline | 2025 | 1.1318 |
+| MoC | 2025 | **1.1193** |
+| **Average strong baseline** | — | 1.1311 |
+| **Average MoC** | — | **1.1190** |
+
+MoC continues to provide a large improvement on the stronger baseline, reducing average validation BPB from **1.1311** to **1.1190**.
+
+This suggests that the benefit of token-adaptive local operators is not limited to the naive baseline. In this stronger setting, applying MoC before both QKV and the MLP gives a substantial fixed-step gain, though the added routing and dynamic convolution overhead still makes throughput an important practical concern.
+
+
 
 ---
 
