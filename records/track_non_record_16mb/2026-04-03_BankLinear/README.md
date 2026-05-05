@@ -6,74 +6,89 @@ Modern transformers allocate a unique set of weights to every layer, leading to 
 
 **BankLinear** replaces explicit per-layer weight matrices with **compositions over a shared bank of learned basis matrices**. Each layer constructs its weights dynamically using learned mixing coefficients, enabling parameter sharing across depth while preserving per-layer specialization.
 
----
+The mixing mechanism is factorized into global and channel-wise terms. The global coefficient provides an easy optimization handle for tuning the overall influence of each basis at a given layer, while the channel-wise coefficient gives finer-grained control over how each output feature specializes its use of the shared bank.
+
 ## Method
 
-Instead of storing a weight matrix per layer, BankLinear defines a shared bank of basis matrices:
+BankLinear defines a shared bank of learned basis matrices:
 
 - `B_i ∈ R^{d_out × d_in}`: shared basis matrices
 
-Each layer constructs its weights through a **factorized mixing mechanism**:
+Each layer constructs its effective weight matrix using a factorized mixing mechanism:
 
+```text
 W^(l)[o, :] = Σ_i α_global_i^(l) · α_channel_i^(l, o) · B_i[o, :]
+```
 
 where:
 
 - `α_global^(l) ∈ R^{bank_size}`: global mixing coefficients for layer `l`
-- `α_channel^(l) ∈ R^{bank_size × d_out}`: channel-wise modulation
+- `α_channel^(l) ∈ R^{bank_size × d_out}`: channel-wise modulation coefficients
+
+This separates weight construction into two roles:
+
+- **Global selection:** `α_global` tunes the overall contribution of each basis element for a given layer
+- **Channel-wise modulation:** `α_channel` adjusts basis contributions per output feature
+
+Together, these allow BankLinear to share structure across layers while preserving both layer-level and output-channel-level specialization.
 
 ---
 
-## Interpretation
+## Pseudocode
 
-This decomposition separates weight construction into two roles:
+```python
+class BankLinear:
+    # shared learned basis matrices
+    bank = learned_tensor(bank_size, d_out, d_in)
 
-- **Global selection:**  
-  `α_global` determines which basis elements are active at a given layer
+    # per-layer mixing coefficients
+    alpha_global = learned_matrix(num_layers, bank_size)
+    alpha_channel = learned_tensor(num_layers, bank_size, d_out)
 
-- **Channel-wise modulation:**  
-  `α_channel` adjusts contributions per output feature
+    def forward(x, layer_id):
+        # compose this layer's weight matrix from the shared bank
+        W = einsum(
+            "b,bo,boi->oi",
+            alpha_global[layer_id],      # global basis strength
+            alpha_channel[layer_id],     # per-output-channel modulation
+            bank                         # shared basis matrices
+        )
 
-This allows BankLinear to:
-
-- share structure across layers
-- specialize per layer
-- adapt per output channel
-
-without storing independent weight matrices.
+        return linear(x, W)
+```
 
 ---
 
 ## Initialization
 
-Initialization is critical for stable performance.
+Initialization is important for stable performance.
 
-We use a **depth-aware initialization** for the global mixing coefficients:
+This PR uses a **depth-aware initialization** for the global mixing coefficients:
+
 - early, middle, and late layers are biased toward different basis elements
-- transitions between them are smooth
+- transitions between these regions are smooth
+- the basis bank starts with an initial division of labor across depth while remaining fully learnable
 
-This provides an initial division of labor across depth while retaining full flexibility during training.
-
-Without this structure, performance degrades significantly.
+This initialization was important for getting consistent gains. Fixed random projections were removed, since they degraded performance once depth-aware initialization was used.
 
 ---
 
-## Integration
+## Setup
 
-BankLinear is applied to attention projections:
-
-- Query, Key, and Value projections are constructed from the shared bank
-- Each layer uses its own mixing coefficients
-
-This enables parameter sharing across depth while maintaining expressivity where it matters most.
+- Fixed 10k training steps
+- Same architecture and training setup as the naive baseline
+- BankLinear applied to QKV projections
+- 3 learnable bases compose the bank
+- These bases are mixed to compose 9 total layers
+- Saved parameters are reinvested into a larger MLP
+  - Baseline MLP expansion: 2.00×
+  - BankLinear MLP expansion: 2.65×
 
 ---
 
 ## Results
 
-All runs are trained for 10k steps under identical settings across three seeds.  
-Three learnable bases compose the bank, which are mixed to compose 9 total layers.
-BankLinear replaces QKV projections, and saved parameters are reinvested into a larger MLP (2.65× vs 2.00× baseline).
+All runs use identical settings across three seeds, building off of the original naive baseline.
 
 | Model | Seed | Pre-quant BPB ↓ | Post-quant BPB ↓ | Size (bytes) |
 |-------|------|----------------:|-----------------:|-------------:|
@@ -86,13 +101,37 @@ BankLinear replaces QKV projections, and saved parameters are reinvested into a 
 | **Average (Baseline)** | — | 1.2264 | 1.2331 | 15857242 |
 | **Average (BankLinear)** | — | **1.2207** | **1.2270** | 15811744 |
 
+On average, BankLinear improves both pre-quant and post-quant BPB while staying within the same size budget.
+
+---
+
+## Throughput
+
+BankLinear introduces additional overhead from dynamic weight composition and the larger MLP.
+
+In the current implementation, training is approximately **1.25× slower** than the baseline.
+
 ---
 
 ## Additional Experiments
 
+Several related variants were tested:
+
 - **LoRA-style adapters:** Allocating saved parameters to layer-specific adapters was less effective than increasing MLP capacity.
-- **Output projections:** Applying BankLinear to projections that write directly into the residual stream significantly degraded performance. We hypothesize this is due to the sensitivity of these layers: errors introduced here directly affect the residual stream and accumulate across depth.
-- **Random projections:** We experimented with augmenting the shared bank with fixed random projection matrices. Without depth-aware initialization, this provided a performance benefit. However, once depth-aware initialization is used, we consistently observe degraded performance when including random projections.
-- **Head-wise bank construction:** We experimented with structuring the shared bank at the attention head level, assigning basis elements to specific heads. This consistently underperformed the standard formulation. In this setting, orthogonal initialization of the basis was important for performance. However, in the standard BankLinear formulation, orthogonal initialization instead degrades performance.
+- **Output projections:** Applying BankLinear to projections that write directly into the residual stream significantly degraded performance. One likely reason is that errors introduced there directly affect the residual stream and accumulate across depth.
+- **Random projections:** Fixed random projection matrices were helpful before depth-aware initialization, but consistently degraded performance once depth-aware initialization was used.
+- **Head-wise bank construction:** Structuring the shared bank at the attention-head level consistently underperformed the standard formulation.
+
 ---
 
+## Related Work Note
+
+After developing this submission, I found that the core idea is closely related to **MASA (Matrix Atom Sharing in Attention)**, which also represents attention projection matrices as combinations of shared matrix atoms.
+
+BankLinear differs in a few small-model-specific choices:
+
+- it uses explicit depth-aware initialization for the mixing coefficients
+- it adds channel-wise modulation on top of global basis mixing
+- it focuses on reallocating saved projection parameters into a larger MLP under the 16MB budget
+
+I did not know about MASA when developing this submission, but the similarity is useful evidence that cross-layer matrix sharing is a plausible direction rather than just a small model challenge-specific trick.
