@@ -6,52 +6,75 @@ Neural networks typically use a single shared activation function across all cha
 
 We explore relaxing this assumption by introducing **ASQU (Asymmetric Squared Unit)**, a simple per-channel activation that allows each feature dimension to learn its own asymmetric response.
 
+ASQU outperforms the current strong 10-minute-track activation baseline, fixed-slope LeakyReLU², across all three seeds in the fixed-step evaluation.
+
+It is not used in the timed-track stack because the learned `β_i` gradient adds an extra kernel launch, and the resulting throughput cost was not justified under the 10-minute constraint.
+
 ---
 
 ## Motivation
 
-Activation functions (non-gated) are almost always:
+Activation functions often apply the same nonlinear behavior across all channels.
 
-- fixed (e.g. ReLU, GELU), or  
-- globally parameterized (e.g. PReLU with a single slope)  
+In this setting, the strongest activation baseline was fixed-slope LeakyReLU², which improves over ReLU² by allowing negative inputs to contribute through a shared slope. However, that slope is still hard-coded and shared across all feature dimensions.
 
-In both cases, all channels share the same nonlinearity.
+This assumes that all channels benefit from the same asymmetric response.
 
-However, different features may benefit from different activation behavior. For example:
-
-- some channels may benefit from strong suppression of negative inputs (ReLU-like behavior)  
-- others may benefit from more magnitude-based responses, activating on large inputs regardless of sign  
-- others may benefit from allowing negative inputs to contribute instead of being suppressed  
-
-Static activations impose the same behavior across all neurons, which is unnecessarily restrictive.
-
-By allowing the negative branch to be learned per channel, each neuron can specialize its response. In practice, this allows a continuum of behaviors:
-
-- `β_i ≈ 0` → ReLU²-like (suppress negatives)  
-- `β_i > 0` → magnitude-sensitive activation  
-- `β_i < 0` → negative inputs produce modulated negative outputs  
-
-ASQU enables this flexibility with minimal overhead.
+ASQU relaxes this assumption by allowing each channel to specialize its negative-branch behavior. Some channels may benefit from suppressing negative inputs, while others may benefit from responding to large inputs regardless of sign, or from allowing negative inputs to contribute with a different sign or magnitude.
 
 ---
 
-## Method: ASQU
+## Method
 
-ASQU builds on the squared activation (ReLU²), introducing a learned per-channel scaling for the negative branch:
-f(x) = x^2 if x > 0
-f(x) = β_i x^2 if x ≤ 0
+ASQU builds on ReLU² by adding a learned per-channel scaling parameter for the negative branch, similar in spirit to PReLU.
 
-- `β_i` is a learned parameter for each channel  
-- adds minimal parameter overhead  
-- preserves the effectiveness and stability of squared activations  
+```text
+f_i(x) = x^2        if x > 0
+f_i(x) = β_i x^2    if x ≤ 0
+```
 
-ASQU can be viewed as a per-channel generalization of asymmetric squared activations.
+where:
+
+- `β_i` is a learned parameter for channel `i`
+- the positive branch matches ReLU²
+- the negative branch is learned independently per channel
+
+This gives ASQU a continuum of activation behaviors:
+
+- `β_i ≈ 0`: ReLU²-like behavior, suppressing negative inputs
+- `β_i > 0`: magnitude-sensitive behavior, where large negative inputs can activate positively
+- `β_i < 0`: negative inputs produce modulated negative outputs
+
+ASQU can be viewed as a squared PReLU-style activation: ReLU² provides the squared positive branch, while the learned `β_i` gives each channel control over its negative response.
+
+---
+
+## Pseudocode
+
+```python
+class ASQU:
+    # one learned scalar per channel
+    beta = learned_vector(dim)
+
+    def forward(x):
+        x2 = x ** 2
+        return where(x > 0, x2, beta * x2)
+```
+
+---
+
+## Setup
+
+- Fixed 10k training steps
+- Same setup as the baseline
+- ASQU replaces the standard ReLU² activation
+- Minimal parameter overhead from one learned `β_i` per channel
 
 ---
 
 ## Results
 
-We evaluate ASQU under the same 10k step training setup as the baseline.
+All runs use identical settings across three seeds, building off of the original naive baseline.
 
 | Model | Seed | Pre-quant BPB ↓ | Post-quant BPB ↓ | Size (bytes) |
 |-------|------|----------------:|-----------------:|-------------:|
@@ -68,26 +91,30 @@ We evaluate ASQU under the same 10k step training setup as the baseline.
 | **Average (LeakyReLU²)** | — | 1.2241 | 1.2311 | 15860870 |
 | **Average (ASQU)** | — | **1.2234** | **1.2300** | 15893971 |
 
-ASQU provides a consistent improvement over both ReLU² and other fixed-slope asymmetric activations.
+ASQU provides a consistent improvement over both ReLU² and fixed-slope LeakyReLU².
 
 ---
 
 ## Additional Experiments
 
 ### Beta Analysis
-Empirically, we observe that the mean value of β typically converges to roughly around 0.5 (though this also depends significantly on the initialization of beta), which helps explain the effectiveness of fixed-slope asymmetric activations such as LeakyReLU².
 
-However, there is substantial variation across channels: some β values become moderately negative, while others grow larger than 1. This suggests that while a global slope can be a strong baseline, different features benefit from distinct activation behaviors that a global, fixed parameterization cannot capture.
+The learned `β_i` values typically have a mean around 0.5, though this depends on initialization. This helps explain why fixed-slope asymmetric activations such as LeakyReLU² are already strong baselines.
 
+However, there is substantial variation across channels. Some `β_i` values become moderately negative, while others grow larger than 1. This suggests that different features benefit from distinct activation behavior that a single shared slope cannot capture.
 
 ### Learned Exponent
 
-We explored learning the exponent instead of fixing it to 2. While this did not consistently improve final performance and introduced additional overhead, it revealed a consistent depth-dependent pattern:
+I also explored learning the activation exponent instead of fixing it to 2. This did not consistently improve final performance and introduced additional overhead, but it showed a consistent depth-dependent pattern:
 
-- early layers: exponent ≈ 1.4  
-- middle layers: exponent ≈ 1.8  
-- late layers: exponent ≈ 2.2  
+- early layers: exponent ≈ 1.4
+- middle layers: exponent ≈ 1.8
+- late layers: exponent ≈ 2.2
 
 This suggests that different layers may benefit from different degrees of nonlinearity, with deeper layers favoring sharper activations.
 
 ---
+
+## Notes on Evaluation Setting
+
+This PR evaluates ASQU under a fixed 10k step budget to isolate architectural effects from slight potential differences in data exposure. This gives a cleaner comparison when studying small changes such as activation functions.
