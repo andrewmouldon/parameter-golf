@@ -4,105 +4,132 @@
 
 Standard attention treats each head as independent, allocating separate parameters per head even though many heads learn similar or redundant features.
 
-We introduce **Hierarchical Shared Attention (HSA)**, which explicitly models this redundancy by sharing features across heads at multiple levels. Instead of choosing between full sharing (MQA), grouped sharing (GQA), or independent heads (MHA), HSA combines all of them within a single hierarchy.
+Standard attention treats each head as independent, allocating separate parameters per head even though many heads learn similar or overlapping features. HSA instead decomposes head features into shared, group-shared, and head-specific components, allowing the model to reuse common structure while preserving specialization.
 
-Rather than removing redundancy across attention heads, HSA models the shared structure that gives rise to it, allowing heads to reuse common features while still maintaining head-specific specialization.
-
-This enables **structured parameter sharing across heads**, reducing redundant parameterization of shared features and KV-cache duplication while preserving expressivity.
+Rather than choosing between full sharing, grouped sharing, or independent heads, HSA combines these patterns within a single hierarchy. HSA treats the head dimension as a feature budget that can be split across multiple sharing granularities, rather than assigning the entire head to a single sharing pattern.
 
 ---
 
 ## Motivation
 
-Empirically, attention heads are not independent:
+Empirically, attention heads are not fully independent:
 
-- many heads learn similar or overlapping patterns  
-- pruning or merging heads often has limited impact (in models larger than these)  
-- grouped-query attention (GQA) already exploits partial sharing  
+- many heads learn similar or overlapping patterns
+- pruning or merging heads often has limited impact in larger models
+- grouped-query attention already exploits partial sharing
 
-However, existing approaches enforce a **single level of sharing**:
+However, common attention variants enforce a single level of sharing:
 
-- MQA: all heads share the same features  
-- GQA: heads share within fixed groups  
-- MHA: no sharing  
+- **MQA:** all heads share the same features
+- **GQA:** heads share within fixed groups
+- **MHA:** heads remain independent
 
-This suggests a more flexible structure:
-
-> some features should be shared across all heads, some across groups of heads, and some remain head-specific.
+This suggests a more flexible structure: some features can be shared across all heads, some can be shared across groups of heads, and some can remain head-specific.
 
 HSA is designed to model this structure explicitly.
 
 ---
 
-## Method: Hierarchical Shared Attention
+## Method
 
-HSA constructs query/key/value projections using multiple levels of shared features.
+HSA constructs query, key, and value projections using multiple levels of shared features.
 
 Each level is defined by a pair `(g, d)`:
 
-- `g`: number of groups (how many distinct feature sets exist at this level)  
-- `d`: number of dimensions allocated to this level  
+- `g`: number of groups, or how many distinct feature sets exist at this level
+- `d`: number of dimensions allocated to this level
 
 At each level:
 
-- features are shared within groups of heads  
-- smaller `g` → more sharing  
-- larger `g` → more specialization  
+- features are shared within groups of heads
+- smaller `g` means more sharing
+- larger `g` means more specialization
 
-The total head dimension is composed by concatenating features from all levels.
+The total head dimension is formed by concatenating features from all levels. This allows different portions of the feature space to operate at different sharing granularities.
 
-This allows different portions of the feature space to operate at different levels of sharing.
-
-Shared features are modulated with a learned per-head scaling, allowing shared representations to specialize with minimal cost.
+Shared features are also modulated with learned per-head scaling, allowing shared representations to specialize with minimal additional cost.
 
 ---
 
-### Example Configuration
+## Pseudocode
 
-Consider the following configuration for key/value projections:
+```python
+class HierarchicalSharedProjection:
+    levels = [(num_groups, dim), ...]
 
-`kv_levels = [(1, 16), (2, 16), (4, 32)]`
+    # one learned scale per head and per level dimension
+    per_head_scales = learned_scales(num_heads, dim_for_each_level)
 
-which corresponds to 4 KV heads with a total head dimension of 64.
+    def forward(x):
+        proj = linear(x)
+        pieces = []
 
-This decomposes the head features into three levels:
+        for groups, dim in levels:
+            # read this level's projected features
+            level = take_level_slice(proj, groups * dim)
+            level = level.reshape(groups, dim)
 
-- `(1, 16)`  
-  16 dimensions are shared across all heads (MQA-style)
+            # expand group-shared features to heads
+            group_id = head_to_group_map(groups)
+            per_head = level[group_id]
 
-- `(2, 16)`  
-  16 dimensions are split into 2 groups, each shared across 2 heads (GQA-style)
+            # lightweight per-head specialization
+            per_head = per_head * per_head_scales[groups]
 
-- `(4, 32)`  
-  32 dimensions are unique to each head (MHA-style)
+            pieces.append(per_head)
 
-The final head representation is formed by concatenating these components, so each head contains:
+        return concat(pieces, dim=-1)
+```
 
-- shared features (global context)  
-- group-shared features (partial specialization)  
-- head-specific features (full specialization)  
+---
 
-In practice, we observe that more aggressive sharing is often effective for KV projections than for queries, though relatively little exploration has been done to determine optimal structures.
-### Special Cases
+## Example Configuration
 
-HSA generalizes common attention variants:
+For an 8-head projection, a hierarchy could use:
 
-- **MQA**: `(1, head_dim)` → all heads share features  
-- **GQA**: `(g, head_dim)` → fixed grouping  
-- **MHA**: `(num_heads, head_dim)` → no sharing  
+```text
+levels = [(1, 8), (2, 16), (4, 26), (8, 14)]
+```
 
-HSA allows combining these simultaneously across different feature subspaces.
+This corresponds to 8 heads with a total head dimension of 64.
+
+The decomposition is:
+
+- `(1, 8)`: 8 dimensions shared across all heads, MQA-style
+- `(2, 16)`: 16 dimensions split into 2 groups, each shared across 4 heads
+- `(4, 26)`: 26 dimensions split into 4 groups, each shared across 2 heads
+- `(8, 14)`: 14 dimensions unique to each head, MHA-style
+
+The final representation for each head is formed by concatenating these components, so each head contains:
+
+- globally shared features for broad reuse
+- group-shared features at multiple granularities
+- head-specific features for full specialization
+
+This example shows the main idea behind HSA: MQA-style sharing, GQA-style sharing, and MHA-style specialization can coexist inside the same head representation.
+
+---
+
+## Setup
+
+- Fixed 10k training steps
+- Same baseline comparison setup as the naive baseline
+- HSA applied to attention projections
+- MLP expansion adjusted to maintain the parameter budget
+- MLP multiplier: 2.27
+
+This PR uses the following hierarchical configurations:
+
+```text
+q_levels = [(2, 8), (4, 16), (8, 40)]
+kv_levels = [(1, 16), (2, 16), (4, 32)]
+```
 
 ---
 
 ## Results
 
-We evaluate HSA under 10k fixed-step training. MLP expansion is adjusted to maintain a consistent parameter budget (MLP mult = 2.27).
-
-We use the following hierarchical configurations for attention projections:
-
-`q_levels = [(2, 8), (4, 16), (8, 40)]`  
-`kv_levels = [(1, 16), (2, 16), (4, 32)]`
+All runs use identical settings across three seeds, building off of the original naive baseline.
 
 | Model | Seed | Pre-quant BPB ↓ | Post-quant BPB ↓ | Size (bytes) |
 |-------|------|----------------:|-----------------:|-------------:|
@@ -115,12 +142,6 @@ We use the following hierarchical configurations for attention projections:
 | **Average (Baseline)** | — | 1.2264 | 1.2331 | 15857242 |
 | **Average (HSA)** | — | **1.2225** | **1.2287** | 15887509 |
 
----
+On average, HSA improves both pre-quant and post-quant BPB while staying within the same size budget.
 
-## Practical Considerations
-
-- Reduces parameter count in QKV projections  
-- Reduces KV-cache size due to shared feature representations across heads  
-- Implementation is not currently optimized, and adds moderate overhead compared to standard projections
-- Compatible with existing attention implementations  
 ---
