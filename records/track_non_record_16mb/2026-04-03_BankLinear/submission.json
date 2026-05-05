@@ -1,0 +1,9 @@
+{
+  "author": "Andrew Mouldon",
+  "github_id": "andrewmouldon",
+  "name": "BankLinear — Compositional Weight Sharing Across Depth",
+  "blurb": "BankLinear composes per-layer QKV projection weights from a shared bank of learned basis matrices using depth-aware global mixing and channel-wise modulation. Directly builds on the initial naive baseline and is trained for a fixed 10k steps. Reuses projection parameters across depth and reinvests saved capacity into a larger MLP.",
+  "date": "2026-04-03T00:00:00Z",
+  "val_bpb": 1.2270,
+  "bytes_total": 15811744,
+}
