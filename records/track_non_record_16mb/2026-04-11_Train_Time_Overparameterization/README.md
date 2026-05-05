@@ -29,9 +29,65 @@ TTO is applied over the course of training using a simple staged schedule:
 
 After 25% of training, the model is functionally identical in size and structure to the baseline, and the remaining training proceeds normally.
 
+## Pseudocode
+
+```python
+class TTOLinear:
+    # start wider than the final exported layer
+    weight = learned_matrix(expanded_width, d_in)
+
+    # one learned keep logit per expanded neuron
+    keep_logits = learned_vector(expanded_width)
+
+    def forward(x):
+        h = linear(x, weight)
+
+        if gates_are_enabled:
+            p = sigmoid(keep_logits)
+
+            # hard stochastic gate in forward pass
+            mask = bernoulli(p)
+
+            # straight-through style gradient to keep_logits
+            h = hard_gate_with_logit_gradient(h, mask, p)
+
+        return h
+```
+
+```python
+def tto_aux_loss(layer, target_active_neurons):
+    p = sigmoid(layer.keep_logits)
+
+    # keep expected active neurons near the current budget
+    budget_loss = (sum(p) - target_active_neurons) ** 2
+
+    # encourage probabilities to become decisive, near 0 or 1
+    separation_loss = sum(p * (1 - p))
+
+    return budget_loss + separation_loss
+```
+
+```python
+def consolidate(layer, final_width):
+    p = sigmoid(layer.keep_logits)
+
+    # keep the neurons the model learned to rely on
+    keep = topk(p, final_width)
+
+    # prune the expansion projection
+    layer.weight = layer.weight[keep]
+
+    # prune the matching input dimension of the down projection
+    next_layer.weight = next_layer.weight[:, keep]
+
+    # remove gates; the layer is now a normal dense layer
+    layer.keep_logits = None
+    layer.gates_are_enabled = False
+```
+
 ## Results
 
-All runs are trained for 10k steps under identical settings across three seeds.
+All runs are trained for 10k steps under identical settings across three seeds, building off of the original naive baseline.
 
 To keep the final model within the same parameter budget, the baseline uses a 2× MLP expansion, while TTO uses a 4× temporary expansion (8× effective width during training), followed by consolidation back to the original size before export.
 
@@ -48,6 +104,38 @@ To keep the final model within the same parameter budget, the baseline uses a 2�
 
 Train-Time Overparameterization consistently improves over the baseline across all three seeds. 
 
+## Stronger Baseline Validation
+
+To check whether TTO still helps beyond the naive baseline setting, I also ran a second validation experiment on a stronger stack.
+
+This setup ports over several components from the current SOTA-style configuration, including:
+
+- 11 layers
+- SP8192 vocabulary
+- stronger hyperparameters
+- larger baseline MLP expansion
+
+Here, the matched baseline uses a 4× MLP expansion. I also include a 4.5× MLP run as a rough calibration point for how much extra dense MLP capacity would be needed to match TTO.
+
+| Model | Seed | Val BPB ↓ |
+|-------|------|----------:|
+| 4× MLP baseline | 1337 | 1.1304 |
+| 4.5× MLP baseline | 1337 | 1.1250 |
+| TTO, final 4× MLP | 1337 | **1.1249** |
+| 4× MLP baseline | 42 | 1.1312 |
+| 4.5× MLP baseline | 42 | **1.1258** |
+| TTO, final 4× MLP | 42 | 1.1260 |
+| 4× MLP baseline | 2025 | 1.1318 |
+| 4.5× MLP baseline | 2025 | **1.1265** |
+| TTO, final 4× MLP | 2025 | 1.1287 |
+| **Average 4× MLP baseline** | — | 1.1311 |
+| **Average 4.5× MLP baseline** | — | **1.1258** |
+| **Average TTO, final 4× MLP** | — | 1.1265 |
+
+TTO substantially improves over the matched 4× MLP baseline, reducing average validation BPB from **1.1311** to **1.1265**.
+
+It also lands close to the 4.5× MLP baseline while retaining the final 4× MLP size. Interpolating between the 4× and 4.5× dense baselines, TTO behaves roughly like a **4.43× MLP** on average, despite consolidating back to 4×.
+
 ---
 
 ## How Train-Time Overparameterization Works
@@ -55,16 +143,6 @@ Train-Time Overparameterization consistently improves over the baseline across a
 ### Why temporary expansion can help
 
 The fundamental idea behind TTO is simple: a model may be fully capable of representing a good function, but still be bad at discovering it through gradient descent—training with a larger transient model both expands the space of available features and makes useful solutions easier to reach, before being compressed back down.
-
-### Why the MLP is a natural place to apply it
-
-The MLP is a natural place to apply TTO: it contains most of the model’s parameters and is relatively self-contained, making expansion and later pruning straightforward.
-
-The value projection is a plausible alternative, but is much smaller, so we prioritized the MLP as the highest-leverage target (though value-TTO could still be effective).
-
-Applying TTO to query/key projections is likely more challenging due to their tighter coupling and more global role, and may introduce more disruptive changes, though we have not explored this.
-
-One important consideration is that TTO introduces distributional shift during training. As the active neuron budget is reduced, earlier layers change their outputs, perturbing the inputs seen by later layers. When applied more broadly, this effect may compound, suggesting that more structured (e.g. layer- or module-aware) scheduling could help isolate and control these shifts.
 
 ### The core challenge: selecting which neurons survive
 
@@ -106,7 +184,7 @@ From this point onward, training proceeds normally with no additional overhead.
 
 A key observation is that consolidation can occur relatively early. Although the soft pruning is initially disruptive, the model quickly recovers—typically within a small fraction of the remaining training steps—and maintains a consistent performance advantage thereafter.
 
-This makes TTO practical: most of the training run is performed with the final, smaller model, while still benefiting from the improved optimization enabled by early overparameterization.
+This makes TTO practical (though not on the timed track): most of the training run is performed with the final, smaller model, while still benefiting from the improved optimization enabled by early overparameterization.
 
 ## Selection vs. optimization
 
